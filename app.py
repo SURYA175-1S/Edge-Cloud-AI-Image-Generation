@@ -1,34 +1,63 @@
-import streamlit as st
-from diffusers import StableDiffusionPipeline
+from fastapi import FastAPI
+from pydantic import BaseModel
+from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 import torch
+import base64
+from io import BytesIO
 
-@st.cache_resource(show_spinner=False)
-def load_model():
-    # Load Stable Diffusion model for CPU
-    pipe = StableDiffusionPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5",
-        dtype=torch.float32  # float32 works on CPU
+app = FastAPI(title="Edge-Cloud AI Image Generation API")
+
+
+class Prompt(BaseModel):
+    prompt: str
+
+
+print("Loading Stable Diffusion Model...")
+
+pipe = StableDiffusionPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    torch_dtype=torch.float32
+)
+
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+    pipe.scheduler.config
+)
+
+pipe = pipe.to("cpu")
+
+pipe.enable_attention_slicing()
+pipe.safety_checker = None
+
+print("Model Loaded Successfully")
+
+
+@app.get("/")
+def home():
+    return {
+        "message": "Edge-Cloud AI Image Generation API is Running"
+    }
+
+
+@app.post("/generate")
+def generate(prompt: Prompt):
+
+    result = pipe(
+        prompt.prompt,
+        height=384,
+        width=384,
+        num_inference_steps=20,
+        guidance_scale=7.5
     )
-    pipe = pipe.to("cpu")  # CPU only
-    pipe.safety_checker = None
-    pipe.enable_attention_slicing()  # Save memory
-    return pipe
 
-pipe = load_model()
+    image = result.images[0]
 
-st.title("Faster AI Scene Rendering Demo (CPU Optimized)")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
 
-prompt = st.text_input("Enter a scene description:")
+    image_base64 = base64.b64encode(
+        buffer.getvalue()
+    ).decode("utf-8")
 
-if st.button("Generate Scene") and prompt:
-    with st.spinner("Generating scene... This should be faster now."):
-        # Lower resolution for faster CPU generation
-        image = pipe(
-            prompt,
-            height=384,             # lower resolution
-            width=384,              # lower resolution
-            guidance_scale=7.5,
-            num_inference_steps=20  # fewer steps → faster
-        ).images[0]
-
-        st.image(image, caption=prompt)
+    return {
+        "image": image_base64
+    }
